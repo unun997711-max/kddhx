@@ -1,0 +1,687 @@
+
+name: Build LIVAI Shadows of Hell APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Create Game
+        shell: bash
+        run: |
+          mkdir -p www
+          cat > www/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+          <meta name="theme-color" content="#100b16">
+          <title>LIVAI: Shadows of Hell</title>
+          <style>
+          *{box-sizing:border-box}
+          html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#09070d;color:white;font-family:monospace;touch-action:none}
+          body{display:flex;align-items:center;justify-content:center}
+          #game{position:relative;width:min(100vw,177.777vh);height:min(100vh,56.25vw);background:#100b16;overflow:hidden}
+          canvas{width:100%;height:100%;image-rendering:pixelated;display:block}
+          #hud{position:absolute;inset:0;pointer-events:none}
+          .bar{height:10px;width:150px;background:#311c27;border:2px solid #d6b58b;margin:5px}
+          .fill{height:100%;background:#c6384d;width:100%}
+          #health{position:absolute;top:5px;left:5px}
+          #energy{position:absolute;top:31px;left:5px}
+          #controls{position:absolute;bottom:9px;width:100%;display:flex;justify-content:space-between;padding:0 12px;pointer-events:none}
+          .pad,.actions{display:flex;gap:8px;align-items:end;pointer-events:auto}
+          button{font-family:monospace;font-weight:bold;color:#fff;background:#241b2b;border:2px solid #d7b77d;border-radius:9px;min-width:43px;height:43px;font-size:15px;opacity:.88;touch-action:none}
+          button:active{background:#9a344c}
+          .actions button{width:48px;height:48px;border-radius:50%}
+          #message{position:absolute;left:10%;right:10%;bottom:24%;background:#160e1deF;border:2px solid #cba66d;padding:10px;display:none;font-size:12px;line-height:1.6}
+          #menu{position:absolute;inset:0;background:linear-gradient(#08071399,#09050eee);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+          h1{font-size:clamp(22px,5vw,48px);color:#f2d4a1;text-shadow:3px 3px #8d233d;margin:0 0 5px}
+          .sub{letter-spacing:4px;color:#b7a5b7;font-size:10px;margin-bottom:25px}
+          #menu button{height:42px;width:190px;margin:5px;border-radius:3px}
+          #inventory{position:absolute;right:7px;top:7px;display:none;pointer-events:auto;background:#180e21;border:2px solid #d7b77d;padding:7px;font-size:10px}
+          #boss{position:absolute;top:8px;left:50%;transform:translateX(-50%);width:30%;display:none}
+          @media(pointer:fine){#controls{opacity:.35}}
+          </style>
+          </head>
+          <body>
+          <div id="game">
+          <canvas id="screen" width="480" height="270"></canvas>
+          <div id="hud">
+          <div id="health"><div>HP</div><div class="bar"><div class="fill" id="hp"></div></div></div>
+          <div id="energy"><div>ENERGY</div><div class="bar"><div class="fill" id="en"></div></div></div>
+          <div id="boss"><div id="bossname">BOSS</div><div class="bar"><div class="fill" id="bossbar"></div></div></div>
+          <div id="inventory"></div>
+          <div id="message"></div>
+          <div id="controls">
+          <div class="pad">
+          <button data-key="ArrowLeft">◀</button>
+          <button data-key="ArrowRight">▶</button>
+          <button data-key="ArrowDown">▼</button>
+          <button data-key="ArrowUp">▲</button>
+          </div>
+          <div class="actions">
+          <button data-key="j">J</button>
+          <button data-key="k">K</button>
+          <button data-key="l">L</button>
+          <button data-key="i">I</button>
+          </div>
+          </div>
+          <div id="menu">
+          <h1>LIVAI</h1>
+          <div class="sub">SHADOWS OF HELL</div>
+          <button id="start">NEW GAME</button>
+          <button id="continue">CONTINUE</button>
+          <button id="settings">SOUND: ON</button>
+          <p style="font-size:9px;color:#988b9c">A WARRIOR WILL RISE FROM THE ASHES</p>
+          </div>
+          </div>
+          </div>
+          <script>
+          (() => {
+          "use strict";
+          const canvas=document.getElementById("screen");
+          const ctx=canvas.getContext("2d");
+          ctx.imageSmoothingEnabled=false;
+          const W=480,H=270;
+          const $=id=>document.getElementById(id);
+          const keys={};
+          let running=false,frame=0,stage=0,dialogue=0,sound=true,inventoryOpen=false;
+          let camera=0,shake=0,particles=[],enemies=[],projectiles=[];
+          let hp=100,energy=100,coins=0,weapon=0;
+          const saveKey="livai_shadows_save_v1";
+          const player={x:65,y:188,vx:0,vy:0,w:25,h:39,face:1,ground:true,attack:0,combo:0,anim:0,inv:0,super:0};
+          const boss={x:390,y:140,hp:100,max:100,phase:1,attack:0,type:"atlas"};
+          const inventory={potion:3,ether:2,charm:1};
+          const palette={
+          ".":null,
+          "K":"#191522","W":"#eee8e5","S":"#d6a78d",
+          "R":"#922f43","r":"#541e35","G":"#7d8991",
+          "g":"#3e4b5c","Y":"#d9bb76","B":"#283044",
+          "O":"#e47a38","F":"#ffbd54","D":"#33232b",
+          "P":"#c6a2b5","C":"#91c9ce"
+          };
+          function mk(rows,pal=palette,scale=2,flip=false){
+          const width=Math.max(...rows.map(r=>r.length));
+          const data=[];
+          for(let y=0;y<rows.length;y++){
+          for(let x=0;x<rows[y].length;x++){
+          const c=rows[y][x];
+          if(pal[c])data.push([flip?width-1-x:x,y,pal[c]]);
+          }}
+          return {width,height:rows.length,data,scale};
+          }
+          const heroFrames=[
+          mk([
+          ".....KKKK....",
+          "....KWWWWK...",
+          "...KWWWWWWK..",
+          "...KWWSSWWK..",
+          "....KSSSSK...",
+          ".....KRRK....",
+          "..GGGYYYYGGG.",
+          ".GGGGYYYYGGGG",
+          ".GGGGRYYRGGGG",
+          "..GGGYYYYGGG.",
+          "...BBGGGGBB..",
+          "...BBGGGGBB..",
+          "...BBGGGGBB..",
+          "..BBBGGGGBBB.",
+          "..BBBGGGGBBB.",
+          "...BB...BB...",
+          "...BB...BB...",
+          "..BBB...BBB..",
+          "..BBB...BBB.."
+          ]),
+          mk([
+          ".....KKKK....",
+          "....KWWWWK...",
+          "...KWWWWWWK..",
+          "...KWWSSWWK..",
+          "....KSSSSK...",
+          ".....KRRK....",
+          "..GGGYYYYGGG.",
+          ".GGGGYYYYGGGG",
+          ".GGGGRYYRGGGG",
+          "..GGGYYYYGGG.",
+          "...BBGGGGBB..",
+          "..BBGGGGBB...",
+          ".BBBGGGGBB...",
+          ".BBBGGGGBBB..",
+          "..BBGGGGBBB..",
+          "...BB...BB...",
+          "..BB....BB...",
+          ".BBB....BBB..",
+          ".BBB....BBB.."
+          ]),
+          mk([
+          ".....KKKK....",
+          "....KWWWWK...",
+          "...KWWWWWWK..",
+          "...KWWSSWWK..",
+          "....KSSSSK...",
+          ".....KRRK....",
+          "..GGGYYYYGGG.",
+          ".GGGGYYYYGGGG",
+          ".GGGGRYYRGGGG",
+          "..GGGYYYYGGG.",
+          "...BBGGGGBB..",
+          "...BBGGGGBB..",
+          "...BBGGGGBB..",
+          "..BBBGGGGBBB.",
+          "..BBBGGGGBBB.",
+          "..BB...BB....",
+          "..BB...BB....",
+          ".BBB..BBB....",
+          ".BBB..BBB...."
+          ])
+          ];
+          const attackFrames=[
+          mk([
+          ".....KKKK....",
+          "....KWWWWK...",
+          "...KWWWWWWK..",
+          "...KWWSSWWK..",
+          "....KSSSSK...",
+          ".....KRRK....",
+          "..GGGYYYYGGG.",
+          ".GGGGYYYYGGGG",
+          ".GGGGRYYRGGGG",
+          "..GGGYYYYGGG.",
+          "...BBGGGGBB..",
+          "...BBGGGGBB==",
+          "...BBGGGGBB==",
+          "..BBBGGGGBBB=",
+          "..BBBGGGGBBB=",
+          "...BB...BB...",
+          "...BB...BB...",
+          "..BBB...BBB..",
+          "..BBB...BBB.."
+          ].map(s=>s.replace(/=/g,"G"))),
+          mk([
+          ".....KKKK....",
+          "....KWWWWK...",
+          "...KWWWWWWK..",
+          "...KWWSSWWK..",
+          "....KSSSSK...",
+          ".....KRRK....",
+          "..GGGYYYYGGG.",
+          ".GGGGYYYYGGGG",
+          ".GGGGRYYRGGGG",
+          "..GGGYYYYGGG.",
+          "...BBGGGGBB...",
+          "...BBGGGGGGGGGG",
+          "...BBGGGGGGGGGG",
+          "..BBBGGGGBBB...",
+          "..BBBGGGGBBB...",
+          "...BB...BB.....",
+          "...BB...BB.....",
+          "..BBB...BBB....",
+          "..BBB...BBB...."
+          ]),
+          mk([
+          ".....KKKK....",
+          "....KWWWWK...",
+          "...KWWWWWWK..",
+          "...KWWSSWWK..",
+          "....KSSSSK...",
+          ".....KRRK....",
+          "..GGGYYYYGGG.",
+          ".GGGGYYYYGGGG",
+          ".GGGGRYYRGGGG",
+          "..GGGYYYYGGG.",
+          "...BBGGGGBB...",
+          "..BBBGGGGGGGGGGG",
+          ".BBBGGGGGGGGGGGG",
+          ".BBBGGGGBBB.....",
+          "..BBGGGGBBB.....",
+          "...BB...BB......",
+          "..BB....BB......",
+          ".BBB....BBB.....",
+          ".BBB....BBB....."
+          ])
+          ];
+          const enemySprite=mk([
+          "....KKKK....",
+          "...KRRRRK...",
+          "..KRRWWRRK..",
+          "..KRRSSRRK..",
+          "...KSSSSK...",
+          "....KDDK....",
+          ".GGGYYYYGGG.",
+          "GGGGYYYYGGGG",
+          ".GGGGRYYRGGG",
+          "...GGGGGG....",
+          "...BBGGGBB...",
+          "...BBGGGBB...",
+          "..BBB...BBB..",
+          "..BBB...BBB..",
+          "..BB.....BB.."
+          ]);
+          const archerSprite=mk([
+          "....KKKK....",
+          "...KRRRRK...",
+          "..KRRWWRRK..",
+          "..KRRSSRRK..",
+          "...KSSSSK...",
+          "....KDDK....",
+          ".GGGYYYYGGG.",
+          "GGGGYYYYGGGG",
+          ".GGGGRYYRGGG",
+          "...GGGGGG....",
+          "...BBGGGBB...",
+          "..BBBGGGGBBB.",
+          "..BB.....BB..",
+          ".BBB.....BBB."
+          ]);
+          const knightSprite=mk([
+          "....GGGG....",
+          "...GGGGGG...",
+          "..GGGWWGGG..",
+          "..GGGSSGGG..",
+          "..GGGGGGGG..",
+          "...GGYYGG...",
+          ".GGGYYYYGGG.",
+          "GGGGYYYYGGGG",
+          "GGGGGYYGGGGG",
+          "...GGGGGG....",
+          "...BBBBBB....",
+          "..BBBBBBBB...",
+          "..BBB..BBB...",
+          ".BBB....BBB.."
+          ]);
+          const flyerSprite=mk([
+          "....KKKK....",
+          "...KWWWWK...",
+          "..KWWSSWWK..",
+          "...KSSSSK...",
+          "..CCKKKKCC..",
+          ".CCCCCCCCCC.",
+          "CCKKKKKKKKCC",
+          ".CC......CC.",
+          "..CC....CC.."
+          ]);
+          const titanSprite=mk([
+          ".......KKKKKK.......",
+          "......KGGGGGGK......",
+          ".....KGGWWWWGGK.....",
+          ".....KGGSSSSGGK.....",
+          "......KGGGGGGK......",
+          "....GGGGYYYYGGGG....",
+          "...GGGGGYYYYGGGGG...",
+          "..GGGGGGYYYYGGGGGG..",
+          "..GGGGGGRYYRGGGGGG..",
+          "...GGGGGGGGGGGGGG...",
+          "...BBBBGGGGGGGBBBB...",
+          "...BBBBGGGGGGGBBBB...",
+          "..BBBBBBGGGGGBBBBBB..",
+          "..BBBBBBGGGGGBBBBBB..",
+          "..BBBBB......BBBBB...",
+          "..BBBBB......BBBBB...",
+          ".BBBBBB......BBBBBB..",
+          ".BBBBBB......BBBBBB..",
+          ".BBBBB........BBBBB.."
+          ]);
+          const bossSprite=mk([
+          "........KKKKKKK........",
+          ".......KRRRRRRRK.......",
+          "......KRRWWWWWRRK......",
+          "......KRRSSSSSRRK......",
+          ".......KSSSSSSK........",
+          "........KDDDDK.........",
+          ".....GGGGYYYYGGGG......",
+          "....GGGGGYYYYGGGGG.....",
+          "...GGGGGGRYYRGGGGGG....",
+          "....GGGGGGGGGGGGGG.....",
+          "....BBBBGGGGGGGBBBB.....",
+          "...BBBBBGGGGGGGBBBBB....",
+          "...BBBBBGGGGGGGBBBBB....",
+          "..BBBBBB.......BBBBBB...",
+          "..BBBBBB.......BBBBBB...",
+          ".BBBBBBB.......BBBBBBB..",
+          ".BBBBBBB.......BBBBBBB..",
+          "BBBBBBB.........BBBBBBB."
+          ]);
+          function drawSprite(sprite,x,y,scale=2,flip=false){
+          const s=sprite.scale*scale/2;
+          for(const [px,py,c] of sprite.data){
+          ctx.fillStyle=c;
+          ctx.fillRect(Math.round(x+(flip?(sprite.width-1-px):px)*s),Math.round(y+py*s),Math.ceil(s),Math.ceil(s));
+          }
+          }
+          function soundFx(freq=180,duration=.08,type="square"){
+          if(!sound)return;
+          try{
+          const AC=window.AudioContext||window.webkitAudioContext;
+          const a=new AC(),o=a.createOscillator(),g=a.createGain();
+          o.type=type;o.frequency.value=freq;g.gain.value=.04;
+          o.connect(g);g.connect(a.destination);o.start();
+          g.gain.exponentialRampToValueAtTime(.001,a.currentTime+duration);
+          o.stop(a.currentTime+duration);o.onended=()=>a.close();
+          }catch(e){}
+          }
+          function spawn(x,y,color,count=8){
+          for(let i=0;i<count;i++){
+          particles.push({x,y,vx:(Math.random()-.5)*3,vy:-Math.random()*3-1,life:25+Math.random()*20,color,size:1+Math.random()*3});
+          }
+          }
+          function fire(x,y){
+          particles.push({x:x+(Math.random()-.5)*10,y,vx:(Math.random()-.5)*.5,vy:-Math.random()*1.8-.3,life:20+Math.random()*20,color:Math.random()>.5?"#ffbd54":"#e34d32",size:2+Math.random()*4});
+          }
+          function castle(){
+          const grad=ctx.createLinearGradient(0,0,0,H);
+          grad.addColorStop(0,"#111528");grad.addColorStop(1,"#42252d");
+          ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+          for(let i=0;i<10;i++){
+          const x=i*60-camera*.12;
+          ctx.fillStyle=i%2?"#292536":"#352b38";
+          ctx.fillRect(x,70,35,130);
+          ctx.fillRect(x-8,60,14,25);
+          ctx.fillRect(x+28,52,15,35);
+          ctx.fillStyle="#e65a37";
+          ctx.fillRect(x+12,120,5,22);
+          }
+          ctx.fillStyle="#15111c";ctx.fillRect(0,190,W,80);
+          for(let i=0;i<18;i++){
+          const x=(i*37-camera*.4)%500;
+          ctx.fillStyle="#68505a";ctx.fillRect(x,193+(i%3)*9,13,4);
+          }
+          }
+          function background(){
+          const grad=ctx.createLinearGradient(0,0,0,H);
+          grad.addColorStop(0,stage===0?"#302438":"#111a2b");
+          grad.addColorStop(1,stage===0?"#763d37":"#344052");
+          ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+          ctx.fillStyle="#df9c61";
+          ctx.globalAlpha=.25;ctx.fillRect(350,45,70,70);ctx.globalAlpha=1;
+          for(let i=0;i<12;i++){
+          const x=(i*55-camera*.25)%550;
+          ctx.fillStyle="#24232f";
+          ctx.fillRect(x,90,25,105);
+          ctx.fillRect(x-8,80,12,25);
+          ctx.fillRect(x+18,75,13,30);
+          }
+          ctx.fillStyle="#28202b";ctx.fillRect(0,205,W,65);
+          for(let i=0;i<12;i++){
+          const x=(i*45-camera*.7)%520;
+          ctx.fillStyle="#66515a";ctx.fillRect(x,205+(i%3)*7,15,4);
+          }
+          for(let i=0;i<5;i++)fire((i*113+frame*1.3)%480,204);
+          }
+          function drawParticles(){
+          for(let i=particles.length-1;i>=0;i--){
+          const p=particles[i];
+          p.x+=p.vx;p.y+=p.vy;p.vy+=.035;p.life--;
+          ctx.globalAlpha=Math.max(0,p.life/35);
+          ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,p.size,p.size);
+          if(p.life<=0)particles.splice(i,1);
+          }
+          ctx.globalAlpha=1;
+          }
+          function drawPlayer(){
+          const x=player.x-camera;
+          if(player.inv>0&&frame%4<2)return;
+          let sprite=heroFrames[Math.floor(frame/7)%3];
+          if(player.attack>0)sprite=attackFrames[Math.min(2,Math.floor((12-player.attack)/4))];
+          let y=player.y;
+          if(!player.ground)y-=3;
+          if(keys.ArrowDown&&player.ground)y+=7;
+          drawSprite(sprite,x,y,2,player.face<0);
+          if(player.super>0){
+          ctx.globalAlpha=.35;
+          ctx.fillStyle="#9ceaff";
+          ctx.fillRect(x-9,y-8,50,55);
+          ctx.globalAlpha=1;
+          }
+          }
+          function addEnemy(type,x){
+          const data={type,x,y:190,hp:type==="knight"?75:35,attack:0,cool:40+Math.random()*60,face:-1};
+          enemies.push(data);
+          }
+          function drawEnemies(){
+          for(const e of enemies){
+          const x=e.x-camera;
+          const sprite=e.type==="archer"?archerSprite:e.type==="knight"?knightSprite:e.type==="flyer"?flyerSprite:enemySprite;
+          const y=e.type==="flyer"?125+Math.sin(frame*.08+e.x)*13:e.y;
+          drawSprite(sprite,x,y,e.type==="flyer"?2:1.8,e.face<0);
+          ctx.fillStyle="#220f19";ctx.fillRect(x,y-7,25,3);
+          ctx.fillStyle="#b83b4b";ctx.fillRect(x,y-7,25*e.hp/(e.type==="knight"?75:35),3);
+          if(e.type==="archer"&&e.cool<0&&Math.random()<.03){
+          projectiles.push({x:e.x,y:y+12,vx:-2.2,vy:0,life:130});
+          e.cool=100;
+          }
+          e.cool--;
+          }
+          }
+          function drawBoss(){
+          if(stage!==1&&stage!==3)return;
+          const isAtlas=stage===1;
+          const s=isAtlas?titanSprite:bossSprite;
+          const x=boss.x-camera;
+          drawSprite(s,x,boss.y,isAtlas?2.4:2.3);
+          if(boss.attack>0&&frame%8<4)spawn(x+15,boss.y+35,"#ffb44e",2);
+          }
+          function attack(){
+          if(player.attack>0)return;
+          player.attack=12;
+          player.combo=player.combo%3+1;
+          energy=Math.min(100,energy+5);
+          soundFx(220+player.combo*80,.09);
+          const range=player.face>0?75:-75;
+          for(const e of enemies){
+          if(Math.abs(e.x-player.x)<78&&Math.abs(e.y-player.y)<60){
+          e.hp-=player.combo===3?28:16;
+          spawn(e.x,e.y+10,"#f6d6a3",9);
+          soundFx(110,.08,"sawtooth");
+          }
+          }
+          if((stage===1||stage===3)&&Math.abs(boss.x-player.x)<105){
+          boss.hp-=player.combo===3?8:4;
+          spawn(boss.x,boss.y+30,"#f6c67b",12);
+          }
+          }
+          function superAttack(){
+          if(energy<40)return;
+          energy-=40;player.super=45;player.attack=20;
+          soundFx(70,.5,"sawtooth");
+          for(const e of enemies){if(Math.abs(e.x-player.x)<150)e.hp-=55;}
+          if(Math.abs(boss.x-player.x)<180)boss.hp-=20;
+          spawn(player.x,player.y,"#91eaff",35);
+          }
+          function update(){
+          frame++;
+          if(player.attack>0)player.attack--;
+          if(player.super>0)player.super--;
+          if(player.inv>0)player.inv--;
+          let move=0;
+          if(keys.ArrowLeft){move=-1;player.face=-1;}
+          if(keys.ArrowRight){move=1;player.face=1;}
+          player.vx=move*(keys.ArrowDown?1:2.15);
+          player.x=Math.max(10,Math.min(4000,player.x+player.vx));
+          if(keys.ArrowUp&&player.ground){player.vy=-7.5;player.ground=false;soundFx(280,.07);}
+          if(!player.ground){
+          player.vy+=.36;player.y+=player.vy;
+          if(player.y>=188){player.y=188;player.vy=0;player.ground=true;}
+          }
+          if(player.x-camera>310)camera=player.x-310;
+          if(player.x-camera<100)camera=Math.max(0,player.x-100);
+          if(keys.j)attack();
+          if(keys.k)superAttack();
+          if(keys.l&&inventory.potion>0&&hp<100){inventory.potion--;hp=Math.min(100,hp+35);soundFx(500,.2);}
+          if(keys.i)inventoryOpen=!inventoryOpen;
+          for(const e of enemies){
+          if(e.type!=="archer"&&e.type!=="flyer"&&Math.abs(e.x-player.x)<45&&e.cool<=0){
+          hp-=8;player.inv=45;e.cool=75;spawn(player.x,player.y,"#e54b50",7);
+          }
+          if(e.type==="archer"&&Math.abs(e.x-player.x)<180&&e.cool<=0)e.cool=75;
+          }
+          enemies=enemies.filter(e=>e.hp>0);
+          for(const p of projectiles){
+          p.x+=p.vx;p.life--;
+          if(Math.abs(p.x-player.x)<15&&Math.abs(p.y-player.y)<40&&player.inv<=0){
+          hp-=9;player.inv=35;p.life=0;spawn(player.x,player.y,"#ff5555",5);
+          }
+          }
+          projectiles=projectiles.filter(p=>p.life>0);
+          if((stage===1||stage===3)&&boss.hp>0){
+          boss.attack--;
+          if(boss.attack<=0){
+          const distance=Math.abs(boss.x-player.x);
+          if(distance<180){
+          boss.attack=90;
+          if(Math.random()<.5){
+          projectiles.push({x:boss.x,y:boss.y+35,vx:-3.1,life:100});
+          }else{
+          shake=7;spawn(boss.x-20,202,"#f48c42",15);
+          if(distance<100&&player.inv<=0){hp-=15;player.inv=50;}
+          }
+          }
+          }
+          if(boss.hp<boss.max*.65)boss.phase=2;
+          if(boss.hp<boss.max*.3)boss.phase=3;
+          }
+          if(hp<=0){hp=100;player.x=Math.max(20,player.x-120);player.inv=90;}
+          if(shake>0)shake--;
+          $("hp").style.width=hp+"%";
+          $("en").style.width=energy+"%";
+          $("boss").style.display=(stage===1||stage===3)?"block":"none";
+          $("bossbar").style.width=Math.max(0,boss.hp/boss.max*100)+"%";
+          $("bossname").textContent=stage===1?"ATLAS THE COLOSSUS":"AINEN THE QUEEN";
+          $("inventory").style.display=inventoryOpen?"block":"none";
+          $("inventory").innerHTML="POTION: "+inventory.potion+"<br>ETHER: "+inventory.ether+"<br>CHARM: "+inventory.charm+"<br>COINS: "+coins;
+          if(player.x>stage*900+850&&stage<3)nextStage();
+          if(stage===3&&boss.hp<=0)ending();
+          }
+          function nextStage(){
+          stage++;player.x=40;camera=0;enemies=[];
+          boss.hp=stage===3?boss.max:100;boss.max=100;
+          boss.x=390;boss.y=stage===1?125:135;
+          if(stage===2){
+          for(let i=0;i<13;i++)addEnemy(i%4===0?"archer":i%4===1?"knight":i%4===2?"flyer":"soldier",180+i*80);
+          }
+          if(stage===3){enemies=[];boss.hp=100;boss.max=100;}
+          dialogue=stage;
+          $("message").style.display="block";
+          $("message").textContent=["","ATLAS: The earth trembles beneath his feet.","The great army rises. Fight through the darkness.","AINEN: Six minutes until the eternal throne falls."][stage]||"The journey continues...";
+          soundFx(100,.5,"triangle");
+          save();
+          }
+          function ending(){
+          running=false;
+          $("menu").style.display="flex";
+          $("menu").innerHTML="<h1>ETERNAL ENDING</h1><p>The shadows have fallen.</p><p>LEVAI HAS WON.</p><button onclick='location.reload()'>MAIN MENU</button>";
+          save();
+          }
+          function save(){
+          try{localStorage.setItem(saveKey,JSON.stringify({stage,hp,energy,coins,inventory,weapon}));}catch(e){}
+          }
+          function load(){
+          try{
+          const s=JSON.parse(localStorage.getItem(saveKey)||"null");
+          if(!s)return;
+          stage=Math.max(0,Math.min(3,s.stage||0));
+          hp=s.hp||100;energy=s.energy||100;coins=s.coins||0;
+          Object.assign(inventory,s.inventory||{});
+          weapon=s.weapon||0;player.x=40;camera=0;
+          boss.hp=100;boss.max=100;
+          }catch(e){}
+          }
+          function start(){
+          $("menu").style.display="none";running=true;
+          enemies=[];
+          if(stage===2)for(let i=0;i<13;i++)addEnemy(i%3===0?"archer":i%3===1?"knight":"flyer",180+i*80);
+          if(stage===0)for(let i=0;i<7;i++)addEnemy("soldier",240+i*115);
+          if(stage===1){boss.hp=100;boss.max=100;boss.x=390;}
+          if(stage===3){boss.hp=100;boss.max=100;boss.x=390;}
+          }
+          function draw(){
+          ctx.save();
+          if(shake)ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+          background();
+          if(stage===0)castle();
+          drawEnemies();
+          drawBoss();
+          drawPlayer();
+          for(const p of projectiles){
+          ctx.fillStyle="#ff9b51";ctx.fillRect(p.x-camera,p.y,8,3);
+          }
+          drawParticles();
+          ctx.fillStyle="#ddd";ctx.font="8px monospace";
+          ctx.fillText("STAGE "+(stage+1)+" / 4",W-75,15);
+          ctx.restore();
+          }
+          function loop(){
+          if(running){update();draw();}
+          else if(frame%3===0){frame++;draw();}
+          requestAnimationFrame(loop);
+          }
+          $("start").onclick=()=>{stage=0;hp=100;energy=100;coins=0;boss.hp=100;start();};
+          $("continue").onclick=()=>{load();start();};
+          $("settings").onclick=()=>{sound=!sound;$("settings").textContent="SOUND: "+(sound?"ON":"OFF");};
+          document.addEventListener("keydown",e=>{
+          const k=e.key.length===1?e.key.toLowerCase():e.key;
+          keys[k]=true;
+          if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"," "].includes(k))e.preventDefault();
+          });
+          document.addEventListener("keyup",e=>{const k=e.key.length===1?e.key.toLowerCase():e.key;keys[k]=false;});
+          document.querySelectorAll("[data-key]").forEach(b=>{
+          const k=b.dataset.key;
+          b.addEventListener("pointerdown",e=>{e.preventDefault();keys[k]=true;b.setPointerCapture(e.pointerId);});
+          const release=e=>{e.preventDefault();keys[k]=false;};
+          b.addEventListener("pointerup",release);
+          b.addEventListener("pointercancel",release);
+          b.addEventListener("lostpointercapture",release);
+          });
+          setInterval(()=>{if(running){energy=Math.min(100,energy+.35);coins+=.01;if(frame%120===0)save();}},100);
+          load();
+          loop();
+          })();
+          </script>
+          </body>
+          </html>
+          EOF
+
+      - name: Setup Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+          npx cap init "LIVAI Shadows of Hell" "com.livai.shadowsofhell" --web-dir www
+          npx cap add android
+          npx cap sync android
+
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Livai-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
